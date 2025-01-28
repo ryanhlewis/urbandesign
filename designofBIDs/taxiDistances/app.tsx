@@ -48,7 +48,12 @@ export default function App() {
   // -----------------------------
   // State
   // -----------------------------
+  // All taxi data (unfiltered)
   const [taxiData, setTaxiData] = useState<TaxiTrip[]>([]);
+  // Filtered taxi data (possibly excluding Manhattan)
+  const [filteredTaxiData, setFilteredTaxiData] = useState<TaxiTrip[]>([]);
+
+  // Raw BIDs from GeoJSON
   const [rawBids, setRawBids] = useState<turf.FeatureCollection | null>(null);
 
   // Manhattan polygons as an array (Polygon or MultiPolygon)
@@ -106,7 +111,6 @@ export default function App() {
             dropoff: [dropLon, dropLat]
           });
         }
-
         setTaxiData(trips);
       } catch (err) {
         console.error('Error loading taxi data:', err);
@@ -156,8 +160,35 @@ export default function App() {
   }, []);
 
   // -----------------------------
-  // 4) Buffer & Exclude Manhattan
-  //    single effect
+  // 4) Filter out Manhattan taxi rides if Manhattan is disabled
+  // -----------------------------
+  useEffect(() => {
+    // If Manhattan is enabled OR we have no Manhattan polygons yet, just use all taxiData
+    if (manhattanEnabled || manhattanArray.length === 0) {
+      setFilteredTaxiData(taxiData);
+      return;
+    }
+
+    // Otherwise, remove any trip whose pickup OR dropoff is inside Manhattan
+    const newData = taxiData.filter((trip) => {
+      const pickupPt = turf.point(trip.pickup);
+      const dropoffPt = turf.point(trip.dropoff);
+
+      // If either pickup or dropoff is in Manhattan, exclude it
+      const isPickupInManhattan = manhattanArray.some((f) =>
+        turf.booleanPointInPolygon(pickupPt, f)
+      );
+      const isDropoffInManhattan = manhattanArray.some((f) =>
+        turf.booleanPointInPolygon(dropoffPt, f)
+      );
+
+      return !(isPickupInManhattan || isDropoffInManhattan);
+    });
+    setFilteredTaxiData(newData);
+  }, [taxiData, manhattanArray, manhattanEnabled]);
+
+  // -----------------------------
+  // 5) Buffer BIDs & Subtract Manhattan (if disabled)
   // -----------------------------
   useEffect(() => {
     if (!rawBids) {
@@ -188,7 +219,7 @@ export default function App() {
     // remove null
     newFeatures = newFeatures.filter(Boolean);
 
-    // 2) If Manhattan is disabled => subtract each Manhattan poly
+    // 2) If Manhattan is disabled => subtract each Manhattan polygon
     if (!manhattanEnabled && manhattanArray.length > 0) {
       for (const manFeat of manhattanArray) {
         const next: turf.Feature[] = [];
@@ -212,10 +243,10 @@ export default function App() {
   }, [rawBids, manhattanArray, manhattanEnabled, bufferDistance]);
 
   // -----------------------------
-  // 5) Intersection Stats
+  // 6) Intersection Stats
   // -----------------------------
   async function handleIntersect() {
-    if (!bufferedBids || taxiData.length === 0) return;
+    if (!bufferedBids || filteredTaxiData.length === 0) return;
 
     setIsComputing(true);
     // Let the UI show spinner
@@ -226,7 +257,7 @@ export default function App() {
     let dropoffInBID = 0;
     const feats = bufferedBids.features;
 
-    for (const trip of taxiData) {
+    for (const trip of filteredTaxiData) {
       const pickupPt = turf.point(trip.pickup);
       const dropoffPt = turf.point(trip.dropoff);
 
@@ -240,7 +271,7 @@ export default function App() {
     const t1 = performance.now();
 
     setIntersectionStats({
-      totalTrips: taxiData.length,
+      totalTrips: filteredTaxiData.length,
       pickupInBID,
       dropoffInBID,
       elapsedMs: t1 - t0
@@ -249,7 +280,7 @@ export default function App() {
   }
 
   // -----------------------------
-  // 6) Deck.GL layers
+  // 7) Deck.GL layers
   // -----------------------------
   const bidsLayer = new GeoJsonLayer({
     id: 'bids-layer',
@@ -277,7 +308,7 @@ export default function App() {
 
   const pickupLayer = new ScatterplotLayer({
     id: 'pickup-layer',
-    data: taxiData,
+    data: filteredTaxiData,
     getPosition: (d) => d.pickup,
     getFillColor: [255, 0, 0],
     radiusScale: 30,
@@ -286,7 +317,7 @@ export default function App() {
 
   const dropoffLayer = new ScatterplotLayer({
     id: 'dropoff-layer',
-    data: taxiData,
+    data: filteredTaxiData,
     getPosition: (d) => d.dropoff,
     getFillColor: [0, 255, 0],
     radiusScale: 30,
@@ -296,7 +327,7 @@ export default function App() {
   const layers = [bidsLayer, manhattanLayer, pickupLayer, dropoffLayer].filter(Boolean);
 
   // -----------------------------
-  // 7) Render
+  // 8) Render
   // -----------------------------
   return (
     <div className="relative w-full h-full">
@@ -320,47 +351,43 @@ export default function App() {
             onChange={(e) => setBufferDistance(Number(e.target.value))}
             className="accent-pink-500"
           />
-          <span className="text-sm text-gray-800">
-            {bufferDistance} m
-          </span>
+          <span className="text-sm text-gray-800">{bufferDistance} m</span>
         </div>
 
         <div className="flex items-center space-x-4">
+          {/* Manhattan Toggle */}
+          <button
+            onClick={() => setManhattanEnabled(!manhattanEnabled)}
+            className="flex items-center gap-2 px-3 py-2 rounded-md border border-pink-400 text-pink-500 hover:bg-pink-50 transition-colors"
+          >
+            {manhattanEnabled ? (
+              <>
+                <Check className="w-4 h-4" />
+                <span>Manhattan</span>
+              </>
+            ) : (
+              <>
+                <X className="w-4 h-4" />
+                <span>Manhattan</span>
+              </>
+            )}
+          </button>
 
-        {/* Manhattan Toggle */}
-        <button
-          onClick={() => setManhattanEnabled(!manhattanEnabled)}
-          className="flex items-center gap-2 px-3 py-2 rounded-md border border-pink-400 text-pink-500 hover:bg-pink-50 transition-colors"
-        >
-          {manhattanEnabled ? (
-            <>
-              <Check className="w-4 h-4" />
-              <span>Manhattan</span>
-            </>
-          ) : (
-            <>
-              <X className="w-4 h-4" />
-              <span>Manhattan</span>
-            </>
-          )}
-        </button>
-
-        {/* Intersect Button */}
-        <button
-          onClick={handleIntersect}
-          disabled={!bufferedBids || !taxiData.length}
-          className="flex items-center justify-center gap-2 px-3 py-2 bg-pink-500 text-white rounded-md disabled:bg-gray-300"
-        >
-          {isComputing ? (
-            <>
-              <Loader2 className="animate-spin w-5 h-5" />
-              <span>Computing...</span>
-            </>
-          ) : (
-            <span>Intersect</span>
-          )}
-        </button>
-
+          {/* Intersect Button */}
+          <button
+            onClick={handleIntersect}
+            disabled={!bufferedBids || !filteredTaxiData.length}
+            className="flex items-center justify-center gap-2 px-3 py-2 bg-pink-500 text-white rounded-md disabled:bg-gray-300"
+          >
+            {isComputing ? (
+              <>
+                <Loader2 className="animate-spin w-5 h-5" />
+                <span>Computing...</span>
+              </>
+            ) : (
+              <span>Intersect</span>
+            )}
+          </button>
         </div>
 
         {/* Intersection Stats */}
