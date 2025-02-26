@@ -720,7 +720,7 @@
         buildLegend();
         setupChartsToggle();
         setupMapViewToggle();
-        let geojson = await loadGeoJSON("mmnn.geojson"); // <-- Replace with your GeoJSON file URL
+        let geojson = await loadGeoJSON("permitCD302.geojson"); // <-- Replace with your GeoJSON file URL
         geojson = transformGeoJSON(geojson);
         currentGeoJSON = geojson;
         deckgl.setProps({ layers: [makeGeoJsonLayer(geojson)] });
