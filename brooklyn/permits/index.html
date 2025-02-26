@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>NYC DOB Permits</title>
+  <!-- MAPLIBRE GL CSS -->
+  <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      font-family: sans-serif;
+    }
+    #map {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+    }
+    /* Deck canvas behind popups */
+    #deck-canvas {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+    }
+    /* Ensure MapLibre popups are on top */
+    .mapboxgl-popup {
+      z-index: 10;
+    }
+    .tooltip {
+      pointer-events: none;
+      position: absolute;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 6px 8px;
+      z-index: 9999;
+      font-size: 12px;
+      border-radius: 4px;
+      max-width: 300px;
+      display: none;
+    }
+    /* Legend styling */
+    #legend {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 999;
+      background: rgba(255,255,255,0.8);
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      max-height: 250px;
+      overflow-y: auto;
+    }
+    #legend h4 {
+      margin: 0 0 4px 0;
+      font-weight: bold;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin: 2px 0;
+    }
+    .legend-color-box {
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      border: 1px solid #000;
+    }
+    /* Loading overlay */
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(255,255,255,0.9);
+      padding: 20px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      z-index: 10000;
+      display: none;
+    }
+    /* Charts panel styling */
+    #charts-wrapper {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 300px;
+      background: rgba(255,255,255,0.95);
+      border-top-left-radius: 8px;
+      border-top-right-radius: 8px;
+      padding-top: 30px; /* space for toggle button */
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      z-index: 999;
+      transition: height 0.3s;
+      overflow: hidden;
+    }
+    #charts-wrapper.collapsed {
+      height: 30px;
+    }
+    .chart-container {
+      padding-top:30px;
+      flex: 1 1 300px;
+      min-width: 300px;
+      max-width: 500px;
+      height: 250px;
+      margin: 0 auto;
+      position: relative;
+    }
+    .chart-container p {
+      margin: 0;
+      font-weight: bold;
+      font-size: 14px;
+      text-align: center;
+    }
+    /* Analysis title */
+    #charts-title {
+      position: absolute;
+      top: 2px;
+      left: 10px;
+      font-size: 18px;
+      font-weight: bold;
+      z-index: 1000;
+    }
+    /* Toggle button for charts panel */
+    #charts-toggle {
+      position: absolute;
+      top: 2px;
+      right: 10px;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      border: none;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      z-index: 1000;
+    }
+    /* Map view toggle button (top right) */
+    #map-view-toggle {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      border: none;
+      padding: 6px 10px;
+      border-radius: 4px;
+      cursor: pointer;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="deck-canvas"></canvas>
+  <div id="tooltip" class="tooltip"></div>
+
+  <!-- Legend -->
+  <div id="legend">
+    <h4>Permit Type Legend</h4>
+    <!-- Items populated dynamically -->
+  </div>
+
+  <!-- Loading indicator -->
+  <div id="loading">Loading GeoJSON data...</div>
+
+  <!-- Map view toggle button -->
+  <button id="map-view-toggle">Default View</button>
+
+  <!-- Charts panel with title and toggle button -->
+  <div id="charts-wrapper" class="collapsed">
+    <h2 id="charts-title">Analysis</h2>
+    <button id="charts-toggle">▲</button>
+    <!-- Chart for Permit Type Frequencies -->
+    <div class="chart-container">
+      <p>Permit Type Frequencies</p>
+      <canvas id="chart-permit-type"></canvas>
+    </div>
+    <!-- Chart for Filing Status Frequencies -->
+    <div class="chart-container">
+      <p>Filing Status Frequencies</p>
+      <canvas id="chart-filing-status"></canvas>
+    </div>
+    <!-- Chart for License Type Frequencies -->
+    <div class="chart-container">
+      <p>License Type Frequencies</p>
+      <canvas id="chart-license-type"></canvas>
+    </div>
+    <!-- Grouped bar chart: Permit Type vs Filing Status -->
+    <div class="chart-container">
+      <p>Permit Type vs Filing Status</p>
+      <canvas id="chart-permit-type-filing-status"></canvas>
+    </div>
+  </div>
+
+  <!-- External Libraries -->
+  <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@deck.gl/core@8.8.22/dist.min.js"></script>
+  <script src="https://unpkg.com/@deck.gl/layers@8.8.22/dist.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- proj4 for coordinate transformation -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.8.0/proj4.js"></script>
+
+  <script>
+    /********************************************************************
+     * 1) PROJECTION: Define EPSG:2263 (NYC state plane) and convert to EPSG:4326
+     ********************************************************************/
+    proj4.defs("EPSG:2263",
+      "+proj=tmerc +lat_0=40.16666666666666 +lon_0=-74 +k=0.9999375 " +
+      "+x_0=300000 +y_0=0 +ellps=GRS80 +units=us-ft +no_defs"
+    );
+
+    /********************************************************************
+     * 2) MAPPING DICTIONARIES FOR FULL DESCRIPTIONS
+     ********************************************************************/
+    // Permit types from BIS and DOB NOW – expanded with extra codes
+    const permitTypeFull = {
+      "AL": "Alteration",
+      "DM": "Demolition & Removal",
+      "EQ": "Construction Equipment",
+      "CH": "Chute",
+      "FN": "Fence / Construction Fence",
+      "SH": "Sidewalk Shed",
+      "SF": "Scaffold",
+      "OT": "Other-General Construction",
+      "EW": "Equipment Work",
+      "BL": "Boiler",
+      "FA": "Fire Alarm",
+      "FB": "Fuel Burning",
+      "AN": "Antenna",
+      "BE": "Boiler Equipment",
+      "CC": "Curb Cut",
+      "EA": "Earthwork",
+      "EL": "Electrical",
+      "GC": "General Construction",
+      "GC-CX": "Combined (GC + others)",
+      "LA": "Limited Alteration Applications (LAA)",
+      "MS": "Mechanical Systems",
+      "PA": "Place of Assembly",
+      // Additional codes from BIS that were missing:
+      "FO": "Foundation / Earthwork",
+      "NB": "New Building",
+      "PL": "Plumbing",
+      "SG": "Sign"
+    };
+
+    // Filing statuses (using job status codes where possible)
+    const filingStatusFull = {
+      "A": "Pre-Filing",
+      "B": "Application Processed - Part-No Payment",
+      "C": "Application Processed - Payment Only",
+      "D": "Application Processed - Completed",
+      "E": "Application Processed - No Plan Exam",
+      "F": "Application Assigned To Plan Examiner",
+      "G": "PAA Fee Due",
+      "H": "Plan Exam - In Process",
+      "I": "Sign-Off (ARA)",
+      "J": "Plan Exam - Disapproved",
+      "K": "Plan Exam - Partial Approval",
+      "L": "P/E PAA - Pending Fee Estimation",
+      "M": "P/E PAA - Fee Resolved",
+      "P": "Plan Exam - Approved",
+      "Q": "Permit Issued - Partial Job",
+      "R": "Permit Issued - Entire Job/Work",
+      "U": "Completed",
+      "X": "Signed-Off",
+      "3": "Suspended",
+      // Also support textual statuses
+      "INITIAL": "Initial",
+      "RENEWAL": "Renewal"
+    };
+
+    // License types – expanded with common NYC interpretations (guessed)
+    const licenseTypeFull = {
+      "GC": "General Contractor",
+      "MP": "Master Plumber",
+      "NW": "New Work",
+      "PE": "Professional Engineer",
+      "OB": "Owner-Builder",
+      "OW": "Other Work",
+      "RA": "Registered Architect",
+      "SI": "Site Inspector",
+      "HI": "Home Improvement",
+      "DM": "Demolition"  // If used in license type context
+    };
+
+    /********************************************************************
+     * 3) GLOBAL VARIABLES & MAP VIEW MODE TOGGLING
+     ********************************************************************/
+    // Global variable to store the current GeoJSON data
+    let currentGeoJSON = null;
+    // Map view mode: "default" (by permit type) or "initialRenewal" (by filing status)
+    let mapViewMode = "default";
+
+    /********************************************************************
+     * 4) INITIALIZE MAPLIBRE & DECK.GL
+     ********************************************************************/
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: 'https://demotiles.maplibre.org/style.json',
+      center: [-73.95, 40.65], // Centered into Brooklyn CD2
+      zoom: 18,
+      pitch: 0,
+      bearing: 0
+    });
+
+    const deckgl = new deck.Deck({
+      canvas: 'deck-canvas',
+      width: '100%',
+      height: '100%',
+      controller: true,
+      initialViewState: {
+        longitude: -73.98,
+        latitude: 40.695,
+        zoom: 13,
+        pitch: 0,
+        bearing: 0
+      },
+      onViewStateChange: ({ viewState }) => {
+        map.jumpTo({
+          center: [viewState.longitude, viewState.latitude],
+          zoom: viewState.zoom,
+          bearing: viewState.bearing,
+          pitch: viewState.pitch
+        });
+      },
+      layers: []
+    });
+
+    // Keep deck in sync with map movements
+    map.on('move', () => {
+      const center = map.getCenter();
+      deckgl.setProps({
+        viewState: {
+          longitude: center.lng,
+          latitude: center.lat,
+          zoom: map.getZoom(),
+          bearing: map.getBearing(),
+          pitch: map.getPitch()
+        }
+      });
+    });
+
+    /********************************************************************
+     * 5) TOOLTIP & POPUP FUNCTIONS (using full descriptions)
+     ********************************************************************/
+    function updateTooltip({ x, y, object }) {
+      const tooltip = document.getElementById('tooltip');
+      if (object) {
+        const props = object.properties || {};
+        const ptCode = props["Permit Type"] || "N/A";
+        const filingCode = props["Filing Status"] || "N/A";
+        const licenseCode = props["Permittee's License Type"] || "N/A";
+        const permitFull = permitTypeFull[ptCode] || ptCode;
+        const filingFull = filingStatusFull[filingCode] || filingCode;
+        const licenseFull = licenseTypeFull[licenseCode] || licenseCode;
+        tooltip.style.left = x + 'px';
+        tooltip.style.top = y + 'px';
+        tooltip.innerHTML = `
+          <b>Permit Type:</b> ${permitFull}<br/>
+          <b>Filing Status:</b> ${filingFull}<br/>
+          <b>License Type:</b> ${licenseFull}<br/>
+          <b>Address:</b> ${props["constructed_address"] || "N/A"}
+        `;
+        tooltip.style.display = 'block';
+      } else {
+        tooltip.style.display = 'none';
+      }
+    }
+
+    let currentPopup = null;
+
+    /********************************************************************
+     * 6) GEOJSON LAYER CREATION – Uses different coloring based on map view mode
+     ********************************************************************/
+    function makeGeoJsonLayer(geojson) {
+      return new deck.GeoJsonLayer({
+        id: 'geojson-layer',
+        data: geojson,
+        pickable: true,
+        filled: true,
+        getFillColor: f => {
+          if (mapViewMode === 'initialRenewal') {
+            // Color by filing status: green for initial, blue for renewal, gray otherwise.
+            const filing = (f.properties["Filing Status"] || "").trim().toUpperCase();
+            if (filing === "INITIAL") return [0, 200, 0];
+            if (filing === "RENEWAL") return [0, 0, 200];
+            return [200, 200, 200];
+          } else {
+            // Default: color by permit type using a basic color map.
+            const code = f.properties["Permit Type"];
+            const colorMap = {
+              "AL": [230, 25, 75],
+              "DM": [128, 0, 0],
+              "EQ": [0, 128, 255],
+              "CH": [255, 225, 25],
+              "FN": [210, 105, 30],
+              "SH": [60, 180, 75],
+              "SF": [255, 165, 0],
+              "OT": [128, 128, 128],
+              "EW": [255, 0, 0],
+              "BL": [128, 128, 0],
+              "FA": [70, 240, 240],
+              "FB": [0, 130, 200],
+              "AN": [230, 25, 75],
+              "BE": [128, 0, 128],
+              "CC": [60, 180, 75],
+              "EA": [0, 128, 128],
+              "EL": [128, 128, 128],
+              "GC": [255, 105, 180],
+              "GC-CX": [180, 105, 255],
+              "LA": [210, 105, 30],
+              "MS": [220, 20, 60],
+              "PA": [255, 69, 0],
+              "FO": [100, 149, 237],
+              "NB": [34, 139, 34],
+              "PL": [139, 69, 19],
+              "SG": [0, 255, 0]
+            };
+            return colorMap[code] || [200, 200, 200];
+          }
+        },
+        getLineColor: [80,80,80],
+        getLineWidth: 1,
+        lineWidthUnits: 'pixels',
+        opacity: 0.6,
+        onHover: updateTooltip,
+        onClick: (info) => {
+          if (currentPopup) {
+            currentPopup.remove();
+            currentPopup = null;
+          }
+          if (info.object) {
+            const props = info.object.properties || {};
+            const ptCode = props["Permit Type"] || "N/A";
+            const filingCode = props["Filing Status"] || "N/A";
+            const licenseCode = props["Permittee's License Type"] || "N/A";
+            const permitFull = permitTypeFull[ptCode] || ptCode;
+            const filingFull = filingStatusFull[filingCode] || filingCode;
+            const licenseFull = licenseTypeFull[licenseCode] || licenseCode;
+            currentPopup = new maplibregl.Popup({ closeButton: true, closeOnClick: true })
+              .setLngLat(info.coordinate)
+              .setHTML(`
+                <b>Permit Type:</b> ${permitFull}<br/>
+                <b>Filing Status:</b> ${filingFull}<br/>
+                <b>License Type:</b> ${licenseFull}<br/>
+                <b>Business Name:</b> ${props["Permittee's Business Name"] || "N/A"}<br/>
+                <b>Address:</b> ${props["constructed_address"] || "N/A"}
+              `)
+              .addTo(map);
+          }
+        }
+      });
+    }
+
+    /********************************************************************
+     * 7) LOAD & TRANSFORM GEOJSON DATA
+     ********************************************************************/
+    async function loadGeoJSON(url) {
+      const loadingDiv = document.getElementById('loading');
+      loadingDiv.style.display = 'block';
+      try {
+        const response = await fetch(url);
+        if (!response.ok) {
+          throw new Error(`Failed to fetch ${url}: ${response.status}`);
+        }
+        const geojson = await response.json();
+        return geojson;
+      } finally {
+        loadingDiv.style.display = 'none';
+      }
+    }
+
+    function transformCoordinates(coords) {
+      if (typeof coords[0] === 'number') {
+        return proj4("EPSG:2263", "EPSG:4326", coords);
+      } else {
+        return coords.map(transformCoordinates);
+      }
+    }
+
+    function transformGeoJSON(geojson) {
+      if (geojson.type === "FeatureCollection") {
+        geojson.features.forEach(feature => {
+          if (feature.geometry && feature.geometry.coordinates) {
+            feature.geometry.coordinates = transformCoordinates(feature.geometry.coordinates);
+          }
+        });
+      }
+      return geojson;
+    }
+
+    /********************************************************************
+     * 8) BUILD CHARTS – Using full descriptions for labels (including license types)
+     ********************************************************************/
+    let chartPermitType, chartFilingStatus, chartLicenseType, chartPermitTypeFilingStatus;
+
+    function buildCharts(geojson) {
+      const features = geojson.features || [];
+      const permitTypeCounts = {};
+      const filingStatusCounts = {};
+      const licenseTypeCounts = {};
+      const ptFsMatrix = {};  // { permitCode: { filingCode: count } }
+
+      for (const f of features) {
+        const props = f.properties || {};
+        const pt = (props["Permit Type"] || "UNKNOWN").toUpperCase();
+        const fs = (props["Filing Status"] || "UNKNOWN").toUpperCase();
+        const lt = (props["Permittee's License Type"] || "UNKNOWN").toUpperCase();
+
+        permitTypeCounts[pt] = (permitTypeCounts[pt] || 0) + 1;
+        filingStatusCounts[fs] = (filingStatusCounts[fs] || 0) + 1;
+        licenseTypeCounts[lt] = (licenseTypeCounts[lt] || 0) + 1;
+
+        if (!ptFsMatrix[pt]) ptFsMatrix[pt] = {};
+        ptFsMatrix[pt][fs] = (ptFsMatrix[pt][fs] || 0) + 1;
+      }
+
+      const ptCodes = Object.keys(permitTypeCounts).sort();
+      const fsCodes = Object.keys(filingStatusCounts).sort();
+
+      // Build labels using full descriptions
+      const ptLabels = ptCodes.map(code => permitTypeFull[code] || code);
+      const fsLabels = fsCodes.map(code => filingStatusFull[code] || code);
+      const ptData = ptCodes.map(code => permitTypeCounts[code]);
+      const fsData = fsCodes.map(code => filingStatusCounts[code]);
+
+      // Grouped bar chart for Permit Type vs Filing Status
+      const groupedDatasets = fsCodes.map((fsCode, idx) => {
+        return {
+          label: filingStatusFull[fsCode] || fsCode,
+          data: ptCodes.map(ptCode => (ptFsMatrix[ptCode] && ptFsMatrix[ptCode][fsCode]) || 0),
+          backgroundColor: `hsl(${(idx * 60) % 360}, 70%, 60%)`
+        };
+      });
+
+      // License type chart: map codes to full names where possible
+      const ltLabels = Object.keys(licenseTypeCounts).map(code => licenseTypeFull[code] || code);
+      const ltData = Object.keys(licenseTypeCounts).map(code => licenseTypeCounts[code]);
+
+      const ctxPT = document.getElementById('chart-permit-type').getContext('2d');
+      const ctxFS = document.getElementById('chart-filing-status').getContext('2d');
+      const ctxLT = document.getElementById('chart-license-type').getContext('2d');
+      const ctxPTFS = document.getElementById('chart-permit-type-filing-status').getContext('2d');
+
+      chartPermitType = new Chart(ctxPT, {
+        type: 'bar',
+        data: {
+          labels: ptLabels,
+          datasets: [{
+            label: 'Count of Permits',
+            data: ptData,
+            backgroundColor: 'rgba(54,162,235,0.6)',
+            borderColor: 'rgba(54,162,235,1)',
+            borderWidth: 1
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          scales: { x: { beginAtZero: true }, y: { ticks: { autoSkip: false } } },
+          responsive: true,
+          maintainAspectRatio: false
+        }
+      });
+
+      chartFilingStatus = new Chart(ctxFS, {
+        type: 'bar',
+        data: {
+          labels: fsLabels,
+          datasets: [{
+            label: 'Count of Filing Status',
+            data: fsData,
+            backgroundColor: 'rgba(255,99,132,0.6)',
+            borderColor: 'rgba(255,99,132,1)',
+            borderWidth: 1
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          scales: { x: { beginAtZero: true }, y: { ticks: { autoSkip: false } } },
+          responsive: true,
+          maintainAspectRatio: false
+        }
+      });
+
+      chartLicenseType = new Chart(ctxLT, {
+        type: 'pie',
+        data: {
+          labels: ltLabels,
+          datasets: [{
+            label: 'License Types',
+            data: ltData,
+            backgroundColor: [
+              'rgba(54,162,235,0.6)',
+              'rgba(255,99,132,0.6)',
+              'rgba(255,206,86,0.6)',
+              'rgba(75,192,192,0.6)',
+              'rgba(153,102,255,0.6)',
+              'rgba(255,159,64,0.6)',
+              'rgba(199,199,199,0.6)'
+            ]
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false
+        }
+      });
+
+      chartPermitTypeFilingStatus = new Chart(ctxPTFS, {
+        type: 'bar',
+        data: {
+          labels: ptLabels,
+          datasets: groupedDatasets
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { x: { stacked: false }, y: { beginAtZero: true, stacked: false } }
+        }
+      });
+    }
+
+    /********************************************************************
+     * 9) BUILD THE LEGEND (using our permit type color map)
+     ********************************************************************/
+    function buildLegend() {
+      const legendDiv = document.getElementById('legend');
+      while (legendDiv.children.length > 1) {
+        legendDiv.removeChild(legendDiv.lastChild);
+      }
+      Object.entries(permitTypeFull).forEach(([code, fullDesc]) => {
+        // Use the same basic color map as in our layer (with fallback)
+        const colorMap = {
+          "AL": [230,25,75],
+          "DM": [128,0,0],
+          "EQ": [0,128,255],
+          "CH": [255,225,25],
+          "FN": [210,105,30],
+          "SH": [60,180,75],
+          "SF": [255,165,0],
+          "OT": [128,128,128],
+          "EW": [255,0,0],
+          "BL": [128,128,0],
+          "FA": [70,240,240],
+          "FB": [0,130,200],
+          "AN": [230,25,75],
+          "BE": [128,0,128],
+          "CC": [60,180,75],
+          "EA": [0,128,128],
+          "EL": [128,128,128],
+          "GC": [255,105,180],
+          "GC-CX": [180,105,255],
+          "LA": [210,105,30],
+          "MS": [220,20,60],
+          "PA": [255,69,0],
+          "FO": [100,149,237],
+          "NB": [34,139,34],
+          "PL": [139,69,19],
+          "SG": [0,255,0]
+        };
+        const color = colorMap[code] || [200,200,200];
+        const colorBox = document.createElement('span');
+        colorBox.className = 'legend-color-box';
+        colorBox.style.backgroundColor = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'legend-item';
+        itemDiv.appendChild(colorBox);
+        itemDiv.appendChild(document.createTextNode(`${code} – ${fullDesc}`));
+        legendDiv.appendChild(itemDiv);
+      });
+    }
+
+    /********************************************************************
+     * 10) SET UP THE CHARTS PANEL TOGGLE
+     ********************************************************************/
+    function setupChartsToggle() {
+      const chartsWrapper = document.getElementById('charts-wrapper');
+      const toggleButton = document.getElementById('charts-toggle');
+      toggleButton.addEventListener('click', () => {
+        if (chartsWrapper.classList.contains('collapsed')) {
+          chartsWrapper.classList.remove('collapsed');
+          // When expanded, show a down arrow indicating collapse is available
+          toggleButton.textContent = '▼';
+        } else {
+          chartsWrapper.classList.add('collapsed');
+          // When collapsed, show an up arrow indicating expansion
+          toggleButton.textContent = '▲';
+        }
+      });
+    }
+
+    /********************************************************************
+     * 11) SET UP THE MAP VIEW TOGGLE BUTTON
+     ********************************************************************/
+    function setupMapViewToggle() {
+      const mapViewBtn = document.getElementById('map-view-toggle');
+      mapViewBtn.addEventListener('click', () => {
+        // Toggle between "default" and "initialRenewal"
+        mapViewMode = (mapViewMode === "default") ? "initialRenewal" : "default";
+        mapViewBtn.textContent = (mapViewMode === "default") ? "Default View" : "Initial/Renewal View";
+        // Rebuild the layer with the new coloring function
+        if (currentGeoJSON) {
+          deckgl.setProps({ layers: [makeGeoJsonLayer(currentGeoJSON)] });
+        }
+      });
+    }
+
+    /********************************************************************
+     * 12) MAIN FUNCTION: Load data, transform, render layer, build charts/legend, and setup toggles
+     ********************************************************************/
+    async function main() {
+      try {
+        buildLegend();
+        setupChartsToggle();
+        setupMapViewToggle();
+        let geojson = await loadGeoJSON("mmnn.geojson"); // <-- Replace with your GeoJSON file URL
+        geojson = transformGeoJSON(geojson);
+        currentGeoJSON = geojson;
+        deckgl.setProps({ layers: [makeGeoJsonLayer(geojson)] });
+        buildCharts(geojson);
+      } catch (err) {
+        console.error("Error loading GeoJSON data:", err);
+        alert("Failed to load GeoJSON data. See console for details.");
+      }
+    }
+    
+    main();
+  </script>
+</body>
+</html>
