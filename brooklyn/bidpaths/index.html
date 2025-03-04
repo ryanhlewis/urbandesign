@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Brooklyn Shortest Paths – Hotspot Analysis</title>
+  <!-- MAPLIBRE GL CSS -->
+  <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      width: 100%; height: 100%;
+      overflow: hidden; font-family: sans-serif;
+    }
+    #map { position: absolute; width: 100%; height: 100%; }
+    #deck-canvas {
+      position: absolute; width: 100%; height: 100%;
+      z-index: 1;
+    }
+    .mapboxgl-popup { z-index: 10; }
+    /* Tooltip for hex layer (mouse hover) */
+    #tooltip {
+      pointer-events: none;
+      position: absolute;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 6px 8px;
+      font-size: 12px;
+      border-radius: 4px;
+      display: none;
+      z-index: 99999;
+    }
+    /* Analysis container at bottom (chart + stats) */
+    #analysis-container {
+      position: absolute; bottom: 0; left: 0; right: 0;
+      background: rgba(255,255,255,0.95);
+      border-top-left-radius: 8px;
+      border-top-right-radius: 8px;
+      display: flex; flex-direction: row;
+      z-index: 999; padding: 30px;
+    }
+    #chart-container {
+      flex: 2;
+      display: flex; flex-direction: column;
+      height: 200px; margin-right: 10px;
+    }
+    #stats-container {
+      flex: 1;
+      display: flex; flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      border-left: 1px solid #ccc;
+      padding-left: 10px;
+    }
+    #chartTitle {
+      margin: 0; padding: 0;
+      font-weight: bold;
+      text-align: center;
+      font-size: 16px;
+      margin-bottom: 6px;
+    }
+    #myChart { flex: 1; }
+    .stats-box {
+      text-align: center;
+      margin: 5px 0;
+      font-size: 14px;
+    }
+    /* Controls for toggles and view selection */
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      background: rgba(255,255,255,0.8);
+      padding: 8px;
+      border-radius: 4px;
+      z-index: 1000;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    /* Legend styling */
+    #legend {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      background: rgba(0,0,0,0.7);
+      color: #fff;
+      padding: 10px;
+      border-radius: 4px;
+      font-size: 14px;
+      z-index: 1000;
+    }
+    #legend h3 {
+      margin: 0 0 5px;
+      font-size: 16px;
+    }
+    #legend ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+    #legend li {
+      display: flex;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    .legend-color, .legend-line, .legend-hex {
+      display: inline-block;
+      width: 20px;
+      height: 20px;
+      margin-right: 5px;
+      border: 1px solid #fff;
+    }
+    /* For line legend, use border-top to show a line */
+    .legend-line {
+      height: 0;
+      border-top: 3px solid rgb(200,0,0);
+    }
+  </style>
+</head>
+<body>
+  <!-- Controls -->
+  <div id="controls">
+    <label>
+      <input type="checkbox" id="toggle-heat" checked> Heat Map
+    </label>
+    <br>
+    <label>
+      View:
+      <select id="viewSelect">
+        <option value="housing">Housing</option>
+        <option value="subway">Subway</option>
+      </select>
+    </label>
+    <br>
+    <label>
+      Inclusion Radius (m):
+      <input type="range" id="radiusSlider" min="500" max="5000" step="100" value="1000">
+      <span id="radiusValue">1000</span>
+    </label>
+    <br>
+    <label>
+      <input type="checkbox" id="toggle-bid" checked> BID Display Layer
+    </label>
+    <br>
+    <label>
+      <input type="checkbox" id="toggle-bid-geojson" checked> BID GeoJSON
+    </label>
+    <br>
+    <!-- Recenter Camera Button -->
+    <button id="recenterButton">Recenter Camera</button>
+  </div>
+  <!-- Legend -->
+  <div id="legend">
+    <h3>Legend</h3>
+    <ul>
+      <li><span class="legend-color" style="background: rgb(255,165,0);"></span> Public Housing</li>
+      <li><span class="legend-color" style="background: rgb(0,255,255);"></span> Subway Stop</li>
+      <li><span class="legend-color" style="background: rgb(0,128,0);"></span> BID Centroid</li>
+      <li><span class="legend-color" style="background: rgb(0,0,255);"></span> BID GeoJSON</li>
+      <li><span class="legend-line"></span> Path</li>
+      <li><span class="legend-hex" style="background: linear-gradient(to right, rgb(255,255,178), rgb(189,0,38));"></span> Heatmap</li>
+    </ul>
+  </div>
+  <div id="map"></div>
+  <canvas id="deck-canvas"></canvas>
+  <div id="tooltip"></div>
+  <!-- Analysis container at bottom (chart + stats) -->
+  <div id="analysis-container">
+    <div id="chart-container">
+      <p id="chartTitle">Path Length Distribution</p>
+      <canvas id="myChart"></canvas>
+    </div>
+    <div id="stats-container">
+      <div class="stats-box">
+        <b>Number of Paths:</b> <span id="countPaths">0</span>
+      </div>
+      <div class="stats-box">
+        <b>Min Length:</b> <span id="minLength">N/A</span>
+      </div>
+      <div class="stats-box">
+        <b>Max Length:</b> <span id="maxLength">N/A</span>
+      </div>
+      <div class="stats-box">
+        <b>Avg Length:</b> <span id="avgLength">N/A</span>
+      </div>
+    </div>
+  </div>
+  <!-- Libraries -->
+  <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/deck.gl@9.0.0/dist.min.js"></script>
+  <script src="https://unpkg.com/@deck.gl/layers@9.0.0/dist.min.js"></script>
+  <script src="https://unpkg.com/@deck.gl/aggregation-layers@9.0.0/dist.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Turf for spatial calculations -->
+  <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
+  <script>
+    /************************************************************
+     * GLOBAL VARIABLES
+     ************************************************************/
+    let bidGeoJSONData = null; // full BID geojson data
+
+    /************************************************************
+     * 1) INITIALIZE MAPLIBRE & DECK.GL
+     ************************************************************/
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+      center: [-73.98, 40.69],
+      zoom: 11,
+      pitch: 0,
+      bearing: 0
+    });
+    const deckgl = new deck.Deck({
+      canvas: 'deck-canvas',
+      width: '100%',
+      height: '100%',
+      controller: true,
+      initialViewState: {
+        longitude: -73.98,
+        latitude: 40.69,
+        zoom: 11,
+        pitch: 0,
+        bearing: 0
+      },
+      onViewStateChange: ({viewState}) => {
+        map.jumpTo({
+          center: [viewState.longitude, viewState.latitude],
+          zoom: viewState.zoom,
+          bearing: viewState.bearing,
+          pitch: viewState.pitch
+        });
+      },
+      layers: []
+    });
+    map.on('move', () => {
+      const center = map.getCenter();
+      deckgl.setProps({
+        viewState: {
+          longitude: center.lng,
+          latitude: center.lat,
+          zoom: map.getZoom(),
+          bearing: map.getBearing(),
+          pitch: map.getPitch()
+        }
+      });
+    });
+
+    /************************************************************
+     * 2) LOAD CSV & GEOJSON
+     ************************************************************/
+    async function loadCSV(url) {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
+        return await resp.text();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    async function loadGeoJSON(url) {
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`Failed to fetch ${url}: ${resp.status}`);
+      return await resp.json();
+    }
+    // Helper: Parse CSV line (respects quoted fields)
+    function parseCSVLine(line) {
+      const result = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') {
+          if (inQuotes && i < line.length - 1 && line[i+1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (c === ',' && !inQuotes) {
+          result.push(current);
+          current = '';
+        } else {
+          current += c;
+        }
+      }
+      result.push(current);
+      return result;
+    }
+    // Parse CSV into an array of row objects.
+    function parseCSV(csvText) {
+      const lines = csvText.split('\n').filter(l => l.trim().length > 0);
+      const headers = parseCSVLine(lines[0]).map(h => h.trim());
+      const data = [];
+      for (let i = 1; i < lines.length; i++) {
+        const tokens = parseCSVLine(lines[i]);
+        if (tokens.length < headers.length) continue;
+        const rowObj = {};
+        for (let j = 0; j < headers.length; j++) {
+          rowObj[headers[j]] = tokens[j] || '';
+        }
+        data.push(rowObj);
+      }
+      return data;
+    }
+
+    /************************************************************
+     * 3) PARSE COORDINATES & PATH NODES
+     ************************************************************/
+    function parsePathNodesString(pathStr) {
+      // Replace parentheses with brackets to parse as JSON array
+      const cleaned = pathStr.replace(/\(/g, '[').replace(/\)/g, ']');
+      try {
+        return JSON.parse(cleaned);
+      } catch(e) {
+        return [];
+      }
+    }
+
+    /************************************************************
+     * 4) BUILD LAYERS: PATH, HEATMAP, HOUSING, SUBWAY, & BID
+     ************************************************************/
+    let pathLayer, hexLayer, housingLayer, subwayLayer, bidCentroidLayer, bidCircleLayer;
+    let allCoordinates = [];
+    let housingData = [];
+    let subwayData = [];
+    let allPaths = [];
+    let bidFeatures = []; // array of BID features with centroid and inclusion radius
+    let bidCentroids = []; // array of {position: [lon, lat], name: string}
+
+    function buildLayers() {
+      // Build Hexagon layer (heatmap)
+      hexLayer = new deck.HexagonLayer({
+        id: 'hex-layer',
+        data: allCoordinates,
+        getPosition: d => d,
+        radius: 250,
+        elevationScale: 20,
+        extruded: true,
+        pickable: true,
+        opacity: 0.8,
+        coverage: 0.9,
+        upperPercentile: 90,
+        material: {
+          ambient: 0.64,
+          diffuse: 0.6,
+          shininess: 32,
+          specularColor: [51, 51, 51]
+        },
+        colorDomain: [0, 100],
+        elevationDomain: [0, 100],
+        colorRange: [
+          [255,255,178],
+          [254,217,118],
+          [254,178,76],
+          [253,141,60],
+          [240,59,32],
+          [189,0,38]
+        ],
+        onHover: updateHexTooltip
+      });
+      // Path layer for shortest paths
+      pathLayer = new deck.PathLayer({
+        id: 'path-layer',
+        data: allPaths,
+        getPath: d => d.path,
+        getWidth: 4,
+        widthUnits: 'pixels',
+        getColor: [200, 0, 0],
+        opacity: 0.8
+      });
+      // Housing layer
+      housingLayer = new deck.ScatterplotLayer({
+        id: 'housing-layer',
+        data: housingData,
+        getPosition: d => d.position,
+        getRadius: 20,
+        radiusUnits: 'meters',
+        getFillColor: [255,165,0],
+        pickable: true
+      });
+      // Subway layer
+      subwayLayer = new deck.ScatterplotLayer({
+        id: 'subway-layer',
+        data: subwayData,
+        getPosition: d => d.position,
+        getRadius: 20,
+        radiusUnits: 'meters',
+        getFillColor: [0,255,255],
+        pickable: true
+      });
+      // BID Centroid layer
+      bidCentroidLayer = new deck.ScatterplotLayer({
+        id: 'bid-centroid-layer',
+        data: bidCentroids,
+        getPosition: d => d.position,
+        getRadius: 25,
+        radiusUnits: 'meters',
+        getFillColor: () => [0,128,0],
+        pickable: true
+      });
+      // BID Inclusion circle layer using ScatterplotLayer (to mimic a circle)
+      bidCircleLayer = new deck.ScatterplotLayer({
+        id: 'bid-circle-layer',
+        data: bidCentroids,
+        getPosition: d => d.position,
+        getRadius: () => parseFloat(document.getElementById('radiusSlider').value),
+        radiusUnits: 'meters',
+        getFillColor: () => [0,128,0,50],
+        stroked: true,
+        getLineColor: () => [0,128,0,200],
+        lineWidthMinPixels: 2,
+        pickable: false
+      });
+      // If BID GeoJSON toggle is enabled and data exists, add a GeoJsonLayer.
+      let layersToShow = [];
+      if (document.getElementById('toggle-heat').checked) layersToShow.push(hexLayer);
+      layersToShow.push(pathLayer);
+      // Determine view based on selection: housing or subway
+      const viewType = document.getElementById('viewSelect').value;
+      if (viewType === 'housing') {
+        layersToShow.push(housingLayer);
+      } else {
+        layersToShow.push(subwayLayer);
+      }
+      if (document.getElementById('toggle-bid').checked) {
+        layersToShow.push(bidCircleLayer);
+        layersToShow.push(bidCentroidLayer);
+      }
+      if (bidGeoJSONData && document.getElementById('toggle-bid-geojson').checked) {
+        const bidGeojsonLayer = new deck.GeoJsonLayer({
+          id: 'bid-geojson-layer',
+          data: bidGeoJSONData,
+          stroked: true,
+          filled: true,
+          getFillColor: [0, 0, 255, 50],
+          getLineColor: [0, 0, 255, 200],
+          lineWidthMinPixels: 2,
+          pickable: true
+        });
+        layersToShow.push(bidGeojsonLayer);
+      }
+      deckgl.setProps({ layers: layersToShow });
+      deckgl.redraw();
+    }
+    function updateHexTooltip(info) {
+      const tooltip = document.getElementById('tooltip');
+      if (info.object) {
+        const count = info.object.points.length;
+        const { x, y } = info;
+        tooltip.style.left = x + 'px';
+        tooltip.style.top = y + 'px';
+        tooltip.innerHTML = `Hotspot count: <b>${count}</b>`;
+        tooltip.style.display = 'block';
+      } else {
+        tooltip.style.display = 'none';
+      }
+    }
+    /************************************************************
+     * 5) BUILD CHART + STATS
+     *    Global variable to store the chart instance.
+     ************************************************************/
+    let myChartInstance = null;
+    function buildPathLengthChart(rows) {
+      // Parse raw lengths (in degrees) from CSV.
+      const rawLengths = rows
+        .map(r => parseFloat(r.path_length))
+        .filter(v => !isNaN(v) && isFinite(v) && v > 0);
+      if (!rawLengths.length) return;
+      const degToMeter = 100000; // rough conversion for Brooklyn
+      const meterLengths = rawLengths.map(x => x * degToMeter);
+      const minMeter = Math.min(...meterLengths);
+      const maxMeter = Math.max(...meterLengths);
+      const convertToKm = maxMeter > 1000;
+      const factor = convertToKm ? 1/1000 : 1;
+      const unit = convertToKm ? 'km' : 'm';
+      const lengths = meterLengths.map(x => x * factor);
+      const minLen = Math.min(...lengths);
+      const maxLen = Math.max(...lengths);
+      const avgLen = lengths.reduce((a, b) => a + b, 0) / lengths.length;
+      document.getElementById('countPaths').textContent = rows.length.toString();
+      document.getElementById('minLength').textContent = minLen.toFixed(2) + ' ' + unit;
+      document.getElementById('maxLength').textContent = maxLen.toFixed(2) + ' ' + unit;
+      document.getElementById('avgLength').textContent = avgLen.toFixed(2) + ' ' + unit;
+      // Build histogram
+      const binCount = 10;
+      const step = (maxLen - minLen) / binCount;
+      const bins = new Array(binCount).fill(0);
+      lengths.forEach(val => {
+        const idx = Math.min(binCount - 1, Math.floor((val - minLen) / step));
+        bins[idx]++;
+      });
+      const labels = bins.map((_, i) => {
+        const start = (minLen + i * step).toFixed(2);
+        const end = (minLen + (i + 1) * step).toFixed(2);
+        return `${start}–${end} ${unit}`;
+      });
+      const ctx = document.getElementById('myChart').getContext('2d');
+      if(myChartInstance) {
+        myChartInstance.destroy();
+      }
+      myChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [{
+            label: `Count of Paths (in ${unit})`,
+            data: bins,
+            backgroundColor: 'rgba(54,162,235,0.6)'
+          }]
+        },
+        options: {
+          scales: { y: { beginAtZero: true } },
+          responsive: true,
+          maintainAspectRatio: false
+        }
+      });
+    }
+    /************************************************************
+     * 6) SET CAMERA TO FIT THE DISPLAYED PATHS
+     ************************************************************/
+    function setCameraToBounds(coords) {
+      if (!coords.length) return;
+      let minLon = Infinity, maxLon = -Infinity,
+          minLat = Infinity, maxLat = -Infinity;
+      coords.forEach(c => {
+        const lon = c[0], lat = c[1];
+        if (lon < minLon) minLon = lon;
+        if (lon > maxLon) maxLon = lon;
+        if (lat < minLat) minLat = lat;
+        if (lat > maxLat) maxLat = lat;
+      });
+      const centerLon = (minLon + maxLon) / 2;
+      const centerLat = (minLat + maxLat) / 2;
+      map.jumpTo({ center: [centerLon, centerLat], zoom: 11 });
+      deckgl.setProps({
+        viewState: {
+          longitude: centerLon,
+          latitude: centerLat,
+          zoom: 11,
+          pitch: 0,
+          bearing: 0
+        }
+      });
+    }
+    /************************************************************
+     * 7) FILTER DATA BY INCLUSION RADIUS
+     *    Only include a housing/subway point if it lies within
+     *    the given radius (in meters) of at least one BID centroid.
+     ************************************************************/
+    function filterByRadius(rows, bidPoints, viewType, radiusMeters) {
+      // radiusMeters is in meters; turf.distance returns kilometers.
+      return rows.filter(r => {
+        let point = null;
+        if (viewType === 'housing' && r.housing_node && r.housing_node.trim() !== "") {
+          const parsed = parsePathNodesString(r.housing_node);
+          if (parsed.length === 2) point = parsed;
+        } else if (viewType === 'subway' && r.subway_node && r.subway_node.trim() !== "") {
+          const parsed = parsePathNodesString(r.subway_node);
+          if (parsed.length === 2) point = parsed;
+        }
+        if (!point) return false;
+        // Check if the point is within radius of any BID centroid
+        for (let bid of bidPoints) {
+          const d = turf.distance(turf.point(point), turf.point(bid.position), {units: 'kilometers'}) * 1000;
+          if (d <= radiusMeters) return true;
+        }
+        return false;
+      });
+    }
+    /************************************************************
+     * 8) MAIN: Load data, filter by view and radius, build layers, chart, etc.
+     ************************************************************/
+    async function main() {
+      try {
+        // Load BID geojson and compute centroids using turf.centroid.
+        const bidGeoJSON = await loadGeoJSON('fultoncourtmetro.geojson');
+        bidGeoJSONData = bidGeoJSON; // store full geojson for GeoJsonLayer
+        bidCentroids = [];
+        bidFeatures = [];
+        // Only include BID features for Brooklyn.
+        bidGeoJSON.features.forEach(feat => {
+          if (String(feat.properties.F_ALL_BI_1).toUpperCase() === "BROOKLYN") {
+            const centroidFeature = turf.centroid(feat);
+            const position = centroidFeature.geometry.coordinates;
+            bidCentroids.push({ position, name: feat.properties.F_ALL_BI_2 });
+            bidFeatures.push(feat);
+          }
+        });
+        // Load the appropriate CSV based on view selection.
+        const viewType = document.getElementById('viewSelect').value;
+        const csvFile = viewType === 'housing' ? 'housing_to_bid_paths.csv' : 'subway_to_bid_paths.csv';
+        const csvText = await loadCSV(csvFile);
+        if (!csvText) return;
+        const rows = parseCSV(csvText);
+        // Filter rows by inclusion radius
+        const radiusMeters = parseFloat(document.getElementById('radiusSlider').value);
+        const filteredRows = filterByRadius(rows, bidCentroids, viewType, radiusMeters);
+        // Clear existing data arrays
+        allCoordinates = [];
+        allPaths = [];
+        housingData = [];
+        subwayData = [];
+        // Process each row from filtered rows.
+        filteredRows.forEach(r => {
+          const pathStr = r.path_nodes || "";
+          const coords = parsePathNodesString(pathStr);
+          if (coords.length < 2) return;
+          allCoordinates.push(...coords);
+          allPaths.push({ path: coords });
+          if (viewType === 'housing' && r.housing_node && r.housing_node.trim() !== "") {
+            const housingCoord = parsePathNodesString(r.housing_node);
+            if (housingCoord.length === 2)
+              housingData.push({ position: housingCoord });
+          }
+          if (viewType === 'subway' && r.subway_node && r.subway_node.trim() !== "") {
+            const subwayCoord = parsePathNodesString(r.subway_node);
+            if (subwayCoord.length === 2)
+              subwayData.push({ position: subwayCoord });
+          }
+        });
+        buildLayers();
+        buildPathLengthChart(filteredRows);
+        // Note: Camera recentering is now only done when the user clicks the "Recenter Camera" button.
+      } catch (err) {
+        console.error("Error in main():", err);
+        alert("Failed to load or parse CSV data. Check console for details.");
+      }
+    }
+    // Update radius display and refresh data (without recentering camera)
+    document.getElementById('radiusSlider').addEventListener('input', function() {
+      document.getElementById('radiusValue').textContent = this.value;
+      main();
+    });
+    // Update view when selection changes
+    document.getElementById('viewSelect').addEventListener('change', main);
+    // Update layers when toggles change
+    document.getElementById('toggle-heat').addEventListener('change', buildLayers);
+    document.getElementById('toggle-bid').addEventListener('change', buildLayers);
+    document.getElementById('toggle-bid-geojson').addEventListener('change', buildLayers);
+    // Recenter camera when button is clicked
+    document.getElementById('recenterButton').addEventListener('click', function() {
+      setCameraToBounds(allCoordinates);
+    });
+    main();
+  </script>
+</body>
+</html>
