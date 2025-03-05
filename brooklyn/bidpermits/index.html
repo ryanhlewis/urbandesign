@@ -1,0 +1,764 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Advanced MVT Permits Map with Transparent Filtering</title>
+  <!-- MapLibre GL CSS -->
+  <link href="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.css" rel="stylesheet" />
+  <style>
+    html, body {
+      margin: 0; padding: 0;
+      width: 100%; height: 100%;
+      overflow: hidden;
+      font-family: sans-serif;
+    }
+    #map {
+      position: absolute;
+      width: 100%; height: 100%;
+    }
+    #deck-canvas {
+      position: absolute; width: 100%; height: 100%;
+      z-index: 1;
+    }
+    .mapboxgl-popup { z-index: 10; }
+    #tooltip {
+      pointer-events: none;
+      position: absolute;
+      background: rgba(0,0,0,0.8);
+      color: #fff;
+      padding: 6px 8px;
+      font-size: 12px;
+      border-radius: 4px;
+      display: none;
+      z-index: 99999;
+      max-width: 300px;
+    }
+    /* Legend styling */
+    #legend {
+      position: absolute;
+      top: 10px;
+      left: 10px;
+      z-index: 999;
+      background: rgba(255,255,255,0.8);
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      max-height: 250px;
+      overflow-y: auto;
+    }
+    #legend h4 {
+      margin: 0 0 4px 0;
+      font-weight: bold;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin: 2px 0;
+    }
+    .legend-color-box {
+      width: 14px;
+      height: 14px;
+      margin-right: 6px;
+      border: 1px solid #000;
+    }
+    /* Controls panel styling */
+    #controls {
+      position: absolute;
+      top: 10px;
+      left: 180px;
+      z-index: 999;
+      background: rgba(255,255,255,0.85);
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    #controls label {
+      display: block;
+      margin-bottom: 6px;
+    }
+    /* Loading overlay */
+    #loading {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(255,255,255,0.9);
+      padding: 20px;
+      border: 1px solid #ccc;
+      border-radius: 8px;
+      z-index: 10000;
+      display: none;
+    }
+    /* Charts panel styling */
+    #charts-wrapper {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 300px;
+      background: rgba(255,255,255,0.95);
+      border-top-left-radius: 8px;
+      border-top-right-radius: 8px;
+      padding-top: 30px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      z-index: 999;
+      transition: height 0.3s;
+      overflow: hidden;
+    }
+    #charts-wrapper.collapsed {
+      height: 30px;
+    }
+    .chart-container {
+      padding-top: 30px;
+      flex: 1 1 300px;
+      min-width: 300px;
+      max-width: 500px;
+      height: 250px;
+      margin: 0 auto;
+      position: relative;
+    }
+    .chart-container p {
+      margin: 0;
+      font-weight: bold;
+      font-size: 14px;
+      text-align: center;
+    }
+    #charts-title {
+      position: absolute;
+      top: 2px;
+      left: 10px;
+      font-size: 18px;
+      font-weight: bold;
+      z-index: 1000;
+    }
+    #charts-toggle {
+      position: absolute;
+      top: 2px;
+      right: 10px;
+      background: rgba(0,0,0,0.5);
+      color: #fff;
+      border: none;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      z-index: 1000;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <canvas id="deck-canvas"></canvas>
+  <div id="tooltip"></div>
+  
+  <!-- Legend -->
+  <div id="legend">
+    <h4>Permit Type Legend</h4>
+  </div>
+  
+  <!-- Controls panel -->
+  <div id="controls">
+    <label>
+      <b>Color Mode:</b>
+      <select id="colorModeSelect">
+        <option value="default" selected>By Permit Type</option>
+        <option value="initialRenewal">By Filing Status</option>
+      </select>
+    </label>
+    <label>
+      <b>Permit Filter:</b><br>
+      <select id="permitFilter" multiple size="8" style="width: 180px;"></select>
+    </label>
+    <label>
+      <input type="checkbox" id="displayBidBoundaries"> Display BID Boundaries
+    </label>
+    <label>
+      <input type="checkbox" id="intersectBid"> Intersect with BID
+    </label>
+  </div>
+  
+  <!-- Loading overlay -->
+  <div id="loading">Loading MVT Tiles...</div>
+  
+  <!-- Charts panel -->
+  <div id="charts-wrapper" class="collapsed">
+    <h2 id="charts-title">Analysis</h2>
+    <button id="charts-toggle">▲</button>
+    <div class="chart-container">
+      <p>Permit Type Frequencies</p>
+      <canvas id="chart-permit-type"></canvas>
+    </div>
+    <div class="chart-container">
+      <p>Filing Status Frequencies</p>
+      <canvas id="chart-filing-status"></canvas>
+    </div>
+    <div class="chart-container">
+      <p>License Type Frequencies</p>
+      <canvas id="chart-license-type"></canvas>
+    </div>
+    <div class="chart-container">
+      <p>Permit Type vs Filing Status</p>
+      <canvas id="chart-permit-type-filing-status"></canvas>
+    </div>
+  </div>
+  
+  <!-- External Libraries -->
+  <script src="https://unpkg.com/maplibre-gl@2.4.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/deck.gl@9.0.0/dist.min.js"></script>
+  <script src="https://unpkg.com/@deck.gl/layers@9.0.0/dist.min.js"></script>
+  <script src="https://unpkg.com/@deck.gl/geo-layers@9.0.0/dist.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://unpkg.com/@turf/turf/turf.min.js"></script>
+  
+  <script>
+    /********************************************************************
+     * 1) Initialize MapLibre
+     ********************************************************************/
+    const map = new maplibregl.Map({
+      container: 'map',
+      style: 'https://demotiles.maplibre.org/style.json',
+      center: [-73.95, 40.65],
+      zoom: 10,
+      pitch: 0,
+      bearing: 0
+    });
+    
+    /********************************************************************
+     * 2) Initialize Deck.gl
+     ********************************************************************/
+    const deckgl = new deck.Deck({
+      canvas: 'deck-canvas',
+      width: '100%',
+      height: '100%',
+      controller: true,
+      initialViewState: {
+        longitude: -73.95,
+        latitude: 40.65,
+        zoom: 10,
+        pitch: 0,
+        bearing: 0
+      },
+      onViewStateChange: ({viewState}) => {
+        map.jumpTo({
+          center: [viewState.longitude, viewState.latitude],
+          zoom: viewState.zoom,
+          bearing: viewState.bearing,
+          pitch: viewState.pitch
+        });
+      },
+      layers: []
+    });
+    
+    map.on('move', () => {
+      const center = map.getCenter();
+      deckgl.setProps({
+        viewState: {
+          longitude: center.lng,
+          latitude: center.lat,
+          zoom: map.getZoom(),
+          bearing: map.getBearing(),
+          pitch: map.getPitch()
+        }
+      });
+    });
+    
+    /********************************************************************
+     * 3) Dictionaries and Color Maps
+     ********************************************************************/
+    const permitTypeFull = {
+      "AL": "Alteration",
+      "DM": "Demolition & Removal",
+      "EQ": "Construction Equipment",
+      "CH": "Chute",
+      "FN": "Fence / Construction Fence",
+      "SH": "Sidewalk Shed",
+      "SF": "Scaffold",
+      "OT": "Other-General Construction",
+      "EW": "Equipment Work",
+      "BL": "Boiler",
+      "FA": "Fire Alarm",
+      "FB": "Fuel Burning",
+      "AN": "Antenna",
+      "BE": "Boiler Equipment",
+      "CC": "Curb Cut",
+      "EA": "Earthwork",
+      "EL": "Electrical",
+      "GC": "General Construction",
+      "GC-CX": "Combined (GC + others)",
+      "LA": "Limited Alt App",
+      "MS": "Mechanical Systems",
+      "PA": "Place of Assembly",
+      "FO": "Foundation / Earthwork",
+      "NB": "New Building",
+      "PL": "Plumbing",
+      "SG": "Sign",
+      "??": "Unknown"
+    };
+    
+    const filingStatusFull = {
+      "INITIAL": "Initial",
+      "RENEWAL": "Renewal",
+      "A": "Pre-Filing",
+      "B": "App Processed - No Payment",
+      "C": "App Processed - Payment Only",
+      "D": "App Processed - Completed",
+      "E": "No Plan Exam",
+      "F": "Assigned To Plan Examiner",
+      "G": "PAA Fee Due",
+      "H": "Plan Exam - In Process",
+      "I": "Sign-Off (ARA)",
+      "J": "Disapproved",
+      "K": "Partial Approval",
+      "L": "P/E PAA - Pending Fee",
+      "M": "P/E PAA - Fee Resolved",
+      "P": "Approved",
+      "Q": "Permit Issued - Partial",
+      "R": "Permit Issued - Entire",
+      "U": "Completed",
+      "X": "Signed-Off",
+      "3": "Suspended",
+      "UNK": "Unknown"
+    };
+    
+    const licenseTypeFull = {
+      "GC": "General Contractor",
+      "MP": "Master Plumber",
+      "NW": "New Work",
+      "PE": "Professional Engineer",
+      "OB": "Owner-Builder",
+      "OW": "Other Work",
+      "RA": "Registered Architect",
+      "SI": "Site Inspector",
+      "HI": "Home Improvement",
+      "DM": "Demolition",
+      "UNKNOWN": "Unknown"
+    };
+    
+    const permitTypeColorMap = {
+      "AL": [230,25,75],
+      "DM": [128,0,0],
+      "EQ": [0,128,255],
+      "CH": [255,225,25],
+      "FN": [210,105,30],
+      "SH": [60,180,75],
+      "SF": [255,165,0],
+      "OT": [128,128,128],
+      "EW": [255,0,0],
+      "BL": [128,128,0],
+      "FA": [70,240,240],
+      "FB": [0,130,200],
+      "AN": [230,25,75],
+      "BE": [128,0,128],
+      "CC": [60,180,75],
+      "EA": [0,128,128],
+      "EL": [128,128,128],
+      "GC": [255,105,180],
+      "GC-CX": [180,105,255],
+      "LA": [210,105,30],
+      "MS": [220,20,60],
+      "PA": [255,69,0],
+      "FO": [100,149,237],
+      "NB": [34,139,34],
+      "PL": [139,69,19],
+      "SG": [0,255,0],
+      "??": [200,200,200]
+    };
+    
+    /********************************************************************
+     * 4) Build Legend and Permit Filter UI
+     ********************************************************************/
+    function buildLegend() {
+      const legendDiv = document.getElementById('legend');
+      while (legendDiv.children.length > 1) {
+        legendDiv.removeChild(legendDiv.lastChild);
+      }
+      Object.entries(permitTypeFull).forEach(([code, fullDesc]) => {
+        const color = permitTypeColorMap[code] || [200,200,200];
+        const colorBox = document.createElement('span');
+        colorBox.className = 'legend-color-box';
+        colorBox.style.backgroundColor = `rgb(${color[0]}, ${color[1]}, ${color[2]})`;
+        const itemDiv = document.createElement('div');
+        itemDiv.className = 'legend-item';
+        itemDiv.appendChild(colorBox);
+        itemDiv.appendChild(document.createTextNode(`${code} – ${fullDesc}`));
+        legendDiv.appendChild(itemDiv);
+      });
+    }
+    
+    function populatePermitFilter() {
+      const filterSelect = document.getElementById('permitFilter');
+      filterSelect.innerHTML = '';
+      // Add "ALL" option to reset filter
+      const allOption = document.createElement('option');
+      allOption.value = "ALL";
+      allOption.text = "ALL (reset filter)";
+      filterSelect.appendChild(allOption);
+      
+      const codes = Object.keys(permitTypeFull).sort();
+      codes.forEach(code => {
+        const option = document.createElement('option');
+        option.value = code;
+        option.text = `${code} - ${permitTypeFull[code]}`;
+        filterSelect.appendChild(option);
+      });
+    }
+    
+    // If "ALL" is selected, ignore other selections.
+    function getSelectedPermitCodes() {
+      const filterSelect = document.getElementById('permitFilter');
+      const selected = Array.from(filterSelect.selectedOptions).map(o => o.value);
+      if (selected.includes("ALL")) {
+        return []; // No filtering if ALL is selected.
+      }
+      return selected;
+    }
+    
+    /********************************************************************
+     * 5) Aggregator for MVT Layer Features
+     ********************************************************************/
+    let allFeatures = [];
+    function resetAggregatedFeatures() {
+      allFeatures = [];
+    }
+    
+    function handleTileLoad(tile) {
+      let featuresInTile = [];
+      if (Array.isArray(tile.data)) {
+        featuresInTile = tile.data;
+      } else if (tile.data && Array.isArray(tile.data.features)) {
+        featuresInTile = tile.data.features;
+      }
+      featuresInTile.forEach(feature => {
+        allFeatures.push(feature);
+      });
+    }
+    
+    /********************************************************************
+     * 6) Create MVTLayer – set non‑matching features to transparent
+     ********************************************************************/
+    let mvtLayer = null;
+    let currentPopup = null;
+    function createMVTLayer() {
+      const colorMode = document.getElementById('colorModeSelect').value;
+      const selectedPermits = getSelectedPermitCodes();
+      const intersectBidToggle = document.getElementById('intersectBid').checked;
+      
+      // Helper function: Should the feature be visible?
+      function shouldShowFeature(feature) {
+        const props = feature.properties || {};
+        const permitType = props["Permit Type"] || "??";
+        // Check permit filter: if selection exists and feature's permit type not in selection, hide.
+        if (selectedPermits.length > 0 && !selectedPermits.includes(permitType)) {
+          return false;
+        }
+        // If "intersect with BID" is enabled, then only show features that intersect at least one BID.
+        if (intersectBidToggle && bidGeoJSONData && bidGeoJSONData.features) {
+          let intersects = false;
+          for (let bidFeature of bidGeoJSONData.features) {
+            try {
+              if (turf.booleanIntersects(feature, bidFeature)) {
+                intersects = true;
+                break;
+              }
+            } catch(e) {
+              console.error("Intersection error:", e);
+            }
+          }
+          if (!intersects) return false;
+        }
+        return true;
+      }
+      
+      return new deck.MVTLayer({
+        id: 'mbtiles-layer-' + Date.now(), // new id forces refresh
+        // data: 'http://localhost:8000/services/output/tiles/{z}/{x}/{y}.pbf',
+        data: 'https://star-fair-kitchen-holds.trycloudflare.com/services/output/tiles/{z}/{x}/{y}.pbf',
+        minZoom: 10,
+        maxZoom: 20,
+        binary: false,  // return GeoJSON so our aggregator works
+        pickable: true,
+        updateTriggers: {
+          getFillColor: [ colorMode, selectedPermits.join(','), intersectBidToggle ],
+          getLineColor: [ colorMode, selectedPermits.join(','), intersectBidToggle ]
+        },
+        // Do NOT filter out features; we want all loaded,
+        // then in getFillColor we set transparent color if feature shouldn’t be shown.
+        getFillColor: f => {
+          if (!f) return [200,200,200,120];
+          // If feature does not meet our criteria, return transparent.
+          if (!shouldShowFeature(f)) return [0, 0, 0, 0];
+          
+          const props = f.properties || {};
+          const pt = props["Permit Type"] || "??";
+          const filing = (props["Filing Status"] || "UNK").toUpperCase();
+          if (colorMode === 'initialRenewal') {
+            if (filing === "INITIAL") return [0, 200, 0, 160];
+            if (filing === "RENEWAL") return [0, 0, 200, 160];
+            return [200,200,200,160];
+          } else {
+            const c = permitTypeColorMap[pt] || [200,200,200];
+            return [...c, 160];
+          }
+        },
+        getLineColor: f => {
+          if (!f) return [80,80,80,160];
+          if (!shouldShowFeature(f)) return [0,0,0,0];
+          return [80,80,80,160];
+        },
+        getLineWidth: 1,
+        lineWidthUnits: 'pixels',
+        onHover: ({x, y, object}) => {
+          const tooltipEl = document.getElementById('tooltip');
+          if (object) {
+            const props = object.properties || {};
+            const ptCode = props["Permit Type"] || "??";
+            const filingCode = (props["Filing Status"] || "UNK").toUpperCase();
+            const licenseCode = (props["Permittee's License Type"] || "UNKNOWN").toUpperCase();
+            tooltipEl.style.left = x + 'px';
+            tooltipEl.style.top = y + 'px';
+            tooltipEl.innerHTML = `
+              <b>Permit Type:</b> ${permitTypeFull[ptCode] || ptCode}<br/>
+              <b>Filing Status:</b> ${filingStatusFull[filingCode] || filingCode}<br/>
+              <b>License Type:</b> ${licenseTypeFull[licenseCode] || licenseCode}<br/>
+              <b>Address:</b> ${props["constructed_address"] || "N/A"}
+            `;
+            tooltipEl.style.display = 'block';
+          } else {
+            tooltipEl.style.display = 'none';
+          }
+        },
+        onClick: info => {
+          if (currentPopup) {
+            currentPopup.remove();
+            currentPopup = null;
+          }
+          if (!info.object) return;
+          const props = info.object.properties || {};
+          const ptCode = props["Permit Type"] || "??";
+          const filingCode = (props["Filing Status"] || "UNK").toUpperCase();
+          const licenseCode = (props["Permittee's License Type"] || "UNKNOWN").toUpperCase();
+          currentPopup = new maplibregl.Popup()
+            .setLngLat(info.coordinate)
+            .setHTML(`
+              <b>Permit Type:</b> ${permitTypeFull[ptCode] || ptCode}<br/>
+              <b>Filing Status:</b> ${filingStatusFull[filingCode] || filingCode}<br/>
+              <b>License Type:</b> ${licenseTypeFull[licenseCode] || licenseCode}<br/>
+              <b>Address:</b> ${props["constructed_address"] || "N/A"}<br/>
+              <b>Business Name:</b> ${props["Permittee's Business Name"] || "N/A"}
+            `)
+            .addTo(map);
+        },
+        onTileLoad: handleTileLoad
+      });
+    }
+    
+    /********************************************************************
+     * 7) Refresh the MVT Layer and add BID boundaries if enabled
+     ********************************************************************/
+    let bidBoundaryLayer = null;
+    function refreshMVTLayer() {
+      resetAggregatedFeatures();
+      mvtLayer = createMVTLayer();
+      const layers = [ mvtLayer ];
+      // If "Display BID Boundaries" is checked and BID data is loaded, add a GeoJsonLayer.
+      if (document.getElementById('displayBidBoundaries').checked && bidGeoJSONData) {
+        bidBoundaryLayer = new deck.GeoJsonLayer({
+          id: 'bid-boundaries-layer',
+          data: bidGeoJSONData,
+          stroked: true,
+          filled: false,
+          getLineColor: [0, 0, 255, 200],
+          lineWidthMinPixels: 2,
+          pickable: false
+        });
+        layers.push(bidBoundaryLayer);
+      }
+      deckgl.setProps({ layers: layers });
+    }
+    
+    /********************************************************************
+     * 8) Build Charts from Aggregated Data using Chart.js
+     ********************************************************************/
+    let chartPermitType, chartFilingStatus, chartLicenseType, chartPermitTypeFilingStatus;
+    function buildChartsFromAggregatedData() {
+      const permitTypeCounts = {};
+      const filingStatusCounts = {};
+      const licenseTypeCounts = {};
+      const ptFsMatrix = {};
+      allFeatures.forEach(feat => {
+        const props = feat.properties || {};
+        const pt = (props["Permit Type"] || "??").toUpperCase();
+        const fs = (props["Filing Status"] || "UNK").toUpperCase();
+        const lt = (props["Permittee's License Type"] || "UNKNOWN").toUpperCase();
+        permitTypeCounts[pt] = (permitTypeCounts[pt] || 0) + 1;
+        filingStatusCounts[fs] = (filingStatusCounts[fs] || 0) + 1;
+        licenseTypeCounts[lt] = (licenseTypeCounts[lt] || 0) + 1;
+        if (!ptFsMatrix[pt]) ptFsMatrix[pt] = {};
+        ptFsMatrix[pt][fs] = (ptFsMatrix[pt][fs] || 0) + 1;
+      });
+      
+      const ptCodes = Object.keys(permitTypeCounts).sort();
+      const fsCodes = Object.keys(filingStatusCounts).sort();
+      const ptLabels = ptCodes.map(code => permitTypeFull[code] || code);
+      const ptData = ptCodes.map(code => permitTypeCounts[code]);
+      const fsLabels = fsCodes.map(code => filingStatusFull[code] || code);
+      const fsData = fsCodes.map(code => filingStatusCounts[code]);
+      
+      const groupedDatasets = fsCodes.map((fsCode, idx) => {
+        return {
+          label: filingStatusFull[fsCode] || fsCode,
+          data: ptCodes.map(ptCode => (ptFsMatrix[ptCode] && ptFsMatrix[ptCode][fsCode]) || 0),
+          backgroundColor: `hsl(${(idx * 50) % 360}, 70%, 60%)`
+        };
+      });
+      
+      const ltCodes = Object.keys(licenseTypeCounts).sort();
+      const ltLabels = ltCodes.map(code => licenseTypeFull[code] || code);
+      const ltData = ltCodes.map(code => licenseTypeCounts[code]);
+      
+      // Destroy old charts if they exist
+      [chartPermitType, chartFilingStatus, chartLicenseType, chartPermitTypeFilingStatus].forEach(ch => {
+        if (ch) ch.destroy();
+      });
+      
+      const ctxPT = document.getElementById('chart-permit-type').getContext('2d');
+      const ctxFS = document.getElementById('chart-filing-status').getContext('2d');
+      const ctxLT = document.getElementById('chart-license-type').getContext('2d');
+      const ctxPTFS = document.getElementById('chart-permit-type-filing-status').getContext('2d');
+      
+      chartPermitType = new Chart(ctxPT, {
+        type: 'bar',
+        data: {
+          labels: ptLabels,
+          datasets: [{
+            label: 'Count of Permits',
+            data: ptData,
+            backgroundColor: 'rgba(54,162,235,0.6)'
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          scales: { x: { beginAtZero: true }, y: { ticks: { autoSkip: false } } },
+          responsive: true,
+          maintainAspectRatio: false
+        }
+      });
+      
+      chartFilingStatus = new Chart(ctxFS, {
+        type: 'bar',
+        data: {
+          labels: fsLabels,
+          datasets: [{
+            label: 'Count of Filing Status',
+            data: fsData,
+            backgroundColor: 'rgba(255,99,132,0.6)'
+          }]
+        },
+        options: {
+          indexAxis: 'y',
+          scales: { x: { beginAtZero: true }, y: { ticks: { autoSkip: false } } },
+          responsive: true,
+          maintainAspectRatio: false
+        }
+      });
+      
+      chartLicenseType = new Chart(ctxLT, {
+        type: 'pie',
+        data: {
+          labels: ltLabels,
+          datasets: [{
+            data: ltData,
+            backgroundColor: [
+              'rgba(54,162,235,0.6)',
+              'rgba(255,99,132,0.6)',
+              'rgba(255,206,86,0.6)',
+              'rgba(75,192,192,0.6)',
+              'rgba(153,102,255,0.6)',
+              'rgba(255,159,64,0.6)',
+              'rgba(199,199,199,0.6)'
+            ]
+          }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false
+        }
+      });
+      
+      chartPermitTypeFilingStatus = new Chart(ctxPTFS, {
+        type: 'bar',
+        data: {
+          labels: ptLabels,
+          datasets: groupedDatasets
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { x: { stacked: false }, y: { beginAtZero: true, stacked: false } }
+        }
+      });
+    }
+    
+    /********************************************************************
+     * 7) Charts Panel Toggle
+     ********************************************************************/
+    function setupChartsToggle() {
+      const chartsWrapper = document.getElementById('charts-wrapper');
+      const toggleButton = document.getElementById('charts-toggle');
+      toggleButton.addEventListener('click', () => {
+        if (chartsWrapper.classList.contains('collapsed')) {
+          chartsWrapper.classList.remove('collapsed');
+          toggleButton.textContent = '▼';
+        } else {
+          chartsWrapper.classList.add('collapsed');
+          toggleButton.textContent = '▲';
+        }
+      });
+    }
+    
+    /********************************************************************
+     * 8) Load BID GeoJSON Data
+     ********************************************************************/
+    let bidGeoJSONData = null;
+    async function loadBidGeoJSON(url) {
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status}`);
+        return await response.json();
+      } catch (err) {
+        console.error(err);
+      }
+    }
+    
+    /********************************************************************
+     * 9) Set Up Control Listeners and Main Function
+     ********************************************************************/
+    function addControlListeners() {
+      // Refresh on any change in controls.
+      document.getElementById('colorModeSelect').addEventListener('change', refreshMVTLayer);
+      document.getElementById('permitFilter').addEventListener('change', refreshMVTLayer);
+      document.getElementById('displayBidBoundaries').addEventListener('change', refreshMVTLayer);
+      document.getElementById('intersectBid').addEventListener('change', refreshMVTLayer);
+    }
+    
+    async function main() {
+      buildLegend();
+      populatePermitFilter();
+      setupChartsToggle();
+      addControlListeners();
+      // Load the BID boundaries GeoJSON (adjust the path/filename as needed)
+      bidGeoJSONData = await loadBidGeoJSON("fultoncourtmetro.geojson");
+      refreshMVTLayer();
+    }
+    
+    // When the map is idle (tiles loaded) build the charts from aggregated features.
+    map.on('idle', () => {
+      buildChartsFromAggregatedData();
+    });
+    
+    main();
+  </script>
+</body>
+</html>
